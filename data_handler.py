@@ -72,6 +72,9 @@ def fetch_forex_data(symbol, start_date, end_date, data_source='yfinance', alpha
     if data_source == 'yfinance':
         try:
             df = yf.download(symbol, start=start_date, end=end_date)
+                        # 处理多级列名（MultiIndex）情况，降为单层列名
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0] for col in df.columns.values]
             if df is None or df.empty:
                 print('yfinance 拉取失败，尝试切换到 akshare...')
                 # 自动切换到 akshare
