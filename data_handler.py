@@ -58,6 +58,12 @@ def fetch_crypto_data(symbol, start_date, end_date, data_source='ccxt'):
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             if col not in df.columns:
                 df[col] = 0
+        # 保证所有字段为 float 类型，防止字符串混入
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # 去除所有含有 NaN 的行，防止有非法字符串或缺失
+        df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
         # 只保留需要的字段
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
         # 如果只有一行，直接返回 None，防止回测端异常
@@ -72,7 +78,7 @@ def fetch_forex_data(symbol, start_date, end_date, data_source='yfinance', alpha
     if data_source == 'yfinance':
         try:
             df = yf.download(symbol, start=start_date, end=end_date)
-                        # 处理多级列名（MultiIndex）情况，降为单层列名
+            # 处理多级列名（MultiIndex）情况，降为单层列名
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [col[0] for col in df.columns.values]
             if df is None or df.empty:
@@ -135,7 +141,23 @@ def fetch_forex_data(symbol, start_date, end_date, data_source='yfinance', alpha
             spot_df.rename(columns={'最新价': 'Close', '开盘价': 'Open', '最高价': 'High', '最低价': 'Low', '时间': 'Date'}, inplace=True)
             spot_df['Date'] = pd.to_datetime(spot_df['Date'], errors='coerce')
             spot_df.set_index('Date', inplace=True)
-            return spot_df[['Open', 'High', 'Low', 'Close']]
+            # 补齐字段，确保所有字段存在
+            for col in ['Open', 'High', 'Low', 'Close']:
+                if col not in spot_df.columns:
+                    spot_df[col] = 0
+            # 保证所有字段为 float 类型，防止字符串混入
+            for col in ['Open', 'High', 'Low', 'Close']:
+                if col in spot_df.columns:
+                    spot_df[col] = pd.to_numeric(spot_df[col], errors='coerce')
+            # 去除所有含有 NaN 的行，防止有非法字符串或缺失
+            spot_df = spot_df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+            # 只保留需要的字段
+            spot_df = spot_df[['Open', 'High', 'Low', 'Close']]
+            # 如果只有一行，直接返回 None，防止回测端异常
+            if len(spot_df) < 2:
+                print(f"akshare 仅返回一行最新价，无法用于回测")
+                return None
+            return spot_df
         except Exception as e:
             print(f"akshare forex_spot_em 异常: {e}")
             return None
@@ -168,6 +190,15 @@ def get_data_with_cache(
     if os.path.exists(cache_file):
         try:
             df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            # 修复：强制数值列为 float，去除非法/缺失行
+            for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+            # 修复：强制 index 为 DatetimeIndex
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index, errors='coerce')
+            df = df[~df.index.isna()]
             if not df.empty:
                 return df
         except Exception as e:
@@ -210,7 +241,16 @@ def get_data_with_cache(
                     df = None
             else:
                 df = None
+            # 修复：强制数值列为 float，去除非法/缺失行
             if df is not None and not df.empty:
+                for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+                # 修复：强制 index 为 DatetimeIndex
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index, errors='coerce')
+                df = df[~df.index.isna()]
                 # 每次都覆盖缓存
                 df.to_csv(cache_file)
                 return df
