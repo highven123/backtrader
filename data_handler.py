@@ -1,189 +1,211 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
-import ccxt
 import akshare as ak
-import baostock as bs
+import ccxt
 import requests
-from datetime import datetime, timedelta
+import os
+import time
 
-def check_network_connection():
-    """检查网络连接"""
-    try:
-        response = requests.get("https://finance.yahoo.com", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def get_stock_data_yfinance(symbol, start_date, end_date):
-    """使用 yfinance 获取股票数据"""
-    try:
-        if not check_network_connection():
-            st.error("无法连接到 Yahoo Finance，请检查网络连接")
-            return None
-            
-        data = yf.download(symbol, start=start_date, end=end_date)
-        if data.empty:
-            st.error(f"没有获取到 {symbol} 的数据")
-            return None
-            
-        return data
-        
-    except Exception as e:
-        st.error(f"获取数据失败: {str(e)}")
+def fetch_stock_data(symbol, start_date, end_date):
+    df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date.replace('-', ''), end_date=end_date.replace('-', ''))
+    if df is None or df.empty:
         return None
+    df.rename(columns={'开盘': 'Open', '收盘': 'Close', '最高': 'High', '最低': 'Low', '成交量': 'Volume', '日期': 'Date'}, inplace=True)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.set_index('Date', inplace=True)
+    return df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
-def get_stock_data_akshare(symbol, start_date, end_date):
-    """使用 akshare 获取股票数据"""
-    try:
-        # 转换股票代码格式
-        if '.SS' in symbol:
-            code = f"sh{symbol.replace('.SS', '')}"
-        elif '.SZ' in symbol:
-            code = f"sz{symbol.replace('.SZ', '')}"
-        elif '.HK' in symbol:
-            code = f"{symbol.replace('.HK', '')}"
-        else:
-            code = symbol
-            
-        # 获取数据
-        if '.HK' in symbol:  # 港股
-            df = ak.stock_hk_daily(symbol=code, adjust="qfq")
-        elif '.SS' in symbol or '.SZ' in symbol:  # A股
-            df = ak.stock_zh_a_daily(symbol=code, adjust="qfq")
-        else:  # 美股
-            df = ak.stock_us_daily(symbol=code, adjust="qfq")
-            
-        # 统一列名
-        df = df.rename(columns={
-            'date': 'Date',
-            'open': 'Open',
-            'high': 'High',
-            'low': 'Low',
-            'close': 'Close',
-            'volume': 'Volume'
-        })
-    
-        # 设置日期索引
+def fetch_crypto_data(symbol, start_date, end_date, data_source='ccxt'):
+    if data_source == 'ccxt':
+        try:
+            exchange = ccxt.binance()
+            since = int(pd.to_datetime(start_date).timestamp() * 1000)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1d', since=since, limit=1000)
+            if not ohlcv:
+                print('ccxt 拉取失败，尝试切换到 akshare...')
+                # 自动切换到 akshare
+                try:
+                    df = fetch_crypto_data(symbol, start_date, end_date, data_source='akshare')
+                    if df is not None and not df.empty:
+                        return df
+                except Exception as e:
+                    print(f'akshare 加密货币接口异常: {e}')
+                return None
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            df['Date'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('Date', inplace=True)
+            df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        except Exception as e:
+            print(f'ccxt 异常: {e}，自动切换到 akshare...')
+            return fetch_crypto_data(symbol, start_date, end_date, data_source='akshare')
+    elif data_source == 'akshare':
+        # akshare 仅查最新价，且无 symbol 参数
+        try:
+            df = ak.crypto_js_spot()
+        except Exception as e:
+            print(f"akshare 加密货币接口异常: {e}")
+            return None
+        if df is None or df.empty:
+            return None
+        # 过滤出目标币种（如 BTCUSDT、BTCUSD、ETHUSD 等，需与 symbol 适配）
+        symbol_str = symbol.replace('/', '').upper()
+        df = df[df['交易品种'].str.upper() == symbol_str]
+        if df.empty:
+            print(f"akshare 未找到币种 {symbol_str} 的最新价")
+            return None
+        # 补齐字段
+        df.rename(columns={'开盘': 'Open', '最高': 'High', '最低': 'Low', '收盘': 'Close', '24小时成交量': 'Volume', '更新时间': 'Date'}, inplace=True)
         df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
-        
-        # 过滤日期范围
-        df = df[(df.index >= pd.to_datetime(start_date)) & 
-               (df.index <= pd.to_datetime(end_date))]
-        
-        return df
-        
-    except Exception as e:
-        st.error(f"获取数据失败: {str(e)}")
-        return None
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    else:
+        raise ValueError("暂不支持的数据源")
 
-def get_stock_data_baostock(symbol, start_date, end_date):
-    """使用 baostock 获取 A 股数据"""
-    try:
-        # 登录系统
-        bs.login()
-        
-        # 转换股票代码格式
-        if '.SS' in symbol:
-            code = f"sh.{symbol.replace('.SS', '')}"
-        elif '.SZ' in symbol:
-            code = f"sz.{symbol.replace('.SZ', '')}"
-        else:
-            st.error("Baostock 仅支持 A 股数据")
+def fetch_forex_data(symbol, start_date, end_date, data_source='yfinance', alpha_vantage_key=None):
+    if data_source == 'yfinance':
+        try:
+            df = yf.download(symbol, start=start_date, end=end_date)
+            if df is None or df.empty:
+                print('yfinance 拉取失败，尝试切换到 akshare...')
+                # 自动切换到 akshare
+                try:
+                    df = fetch_forex_data(symbol, start_date, end_date, data_source='akshare')
+                    if df is not None and not df.empty:
+                        return df
+                except Exception as e:
+                    print(f'akshare 外汇接口异常: {e}')
+                return None
+            df.index = pd.to_datetime(df.index)
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        except Exception as e:
+            print(f"yfinance 外汇接口异常: {e}")
+            print('yfinance 拉取失败，尝试切换到 akshare...')
+            try:
+                df = fetch_forex_data(symbol, start_date, end_date, data_source='akshare')
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                print(f'akshare 外汇接口异常: {e}')
             return None
-            
-        # 获取数据
-        rs = bs.query_history_k_data(
-            code,
-            "date,open,high,low,close,volume",
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-            frequency="d",
-            adjustflag="2"  # 前复权
-        )
-        
-        # 转换为 DataFrame
-        df = pd.DataFrame(rs.data, columns=rs.fields)
-        
-        # 转换数据类型
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-        # 统一列名
-        df = df.rename(columns={
-            'date': 'Date',
-            'open': 'Open',
-            'high': 'High',
-            'low': 'Low',
-            'close': 'Close',
-            'volume': 'Volume'
-        })
-        
-        # 设置日期索引
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        
-        # 登出系统
-        bs.logout()
-        
+    elif data_source == 'alphavantage':
+        if not alpha_vantage_key:
+            raise ValueError("需要提供 Alpha Vantage API KEY")
+        base, quote = symbol[:3], symbol[3:6]
+        url = f"https://www.alphavantage.co/query?function=FX_DAILY&from_symbol={base}&to_symbol={quote}&outputsize=full&apikey={alpha_vantage_key}"
+        r = requests.get(url)
+        data = r.json().get('Time Series FX (Daily)', {})
+        if not data:
+            return None
+        df = pd.DataFrame(data).T.astype(float)
+        df.index = pd.to_datetime(df.index)
+        df.columns = ['Open', 'High', 'Low', 'Close']
+        df = df.sort_index()
+        df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
         return df
-        
-    except Exception as e:
-        st.error(f"获取数据失败: {str(e)}")
-        bs.logout()
-        return None
+    elif data_source == 'akshare':
+        # akshare 历史外汇数据，优先用 forex_hist_em，若 symbol 不支持则 fallback 到 spot
+        try:
+            # 先尝试 forex_hist_em（支持 EURUSD、USDJPY、EURCNYC 等）
+            df = ak.forex_hist_em(symbol=symbol)
+            if df is not None and not df.empty:
+                df.rename(columns={'开盘': 'Open', '收盘': 'Close', '最高': 'High', '最低': 'Low', '日期': 'Date'}, inplace=True)
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+                df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
+                return df[['Open', 'High', 'Low', 'Close']]
+        except Exception as e:
+            print(f"akshare forex_hist_em 异常: {e}")
+        # fallback 到 spot（仅查最新价）
+        try:
+            spot_df = ak.forex_spot_em()
+            spot_df = spot_df[spot_df['代码'].str.upper() == symbol.upper()]
+            if spot_df.empty:
+                print(f"akshare 未找到外汇代码 {symbol} 的最新价")
+                return None
+            spot_df.rename(columns={'最新价': 'Close', '开盘价': 'Open', '最高价': 'High', '最低价': 'Low', '时间': 'Date'}, inplace=True)
+            spot_df['Date'] = pd.to_datetime(spot_df['Date'], errors='coerce')
+            spot_df.set_index('Date', inplace=True)
+            return spot_df[['Open', 'High', 'Low', 'Close']]
+        except Exception as e:
+            print(f"akshare forex_spot_em 异常: {e}")
+            return None
+    else:
+        raise ValueError("暂不支持的数据源")
 
-def fetch_crypto_data(exchange_id, symbol, timeframe, since, limit=1000):
-    """获取加密货币数据"""
-    try:
-        exchange = getattr(ccxt, exchange_id)({
-            'enableRateLimit': True,
-        })
-        
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since, limit)
-        if not ohlcv:
-            st.error(f"没有获取到 {symbol} 的数据")
-            return None
-            
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-        
-        # 验证数据有效性
-        if df.empty:
-            st.error("获取到的数据为空")
-            return None
-            
-        # 检查是否有无效值
-        if df.isnull().any().any():
-            st.warning("数据中存在无效值，将被移除")
-            df = df.dropna()
-            
-        # 检查是否有零或负值
-        invalid_prices = (df[['Open', 'High', 'Low', 'Close']] <= 0).any(axis=1)
-        if invalid_prices.any():
-            st.warning("数据中存在无效的价格（零或负值），将被移除")
-            df = df[~invalid_prices]
-            
-        if df.empty:
-            st.error("清理后的数据为空")
-            return None
-            
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        
-        # 确保列名称正确
-        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-        return df
-        
-    except Exception as e:
-        st.error(f"获取加密货币数据时发生错误: {str(e)}")
-        return None
+def get_data(market, symbol, start_date, end_date, fx_data_source='yfinance', alpha_vantage_key=None, crypto_data_source='ccxt'):
+    if market == '沪深A股':
+        return fetch_stock_data(symbol, start_date, end_date)
+    elif market == '加密货币':
+        return fetch_crypto_data(symbol, start_date, end_date, data_source=crypto_data_source)
+    elif market == '外汇':
+        return fetch_forex_data(symbol, start_date, end_date, data_source=fx_data_source, alpha_vantage_key=alpha_vantage_key)
+    else:
+        raise ValueError("暂不支持的市场类型")
 
-def get_stock_data(symbol, start_date, end_date, data_source='yfinance'):
-    """根据选择的数据源获取股票数据"""
-    if data_source == 'akshare':
-        return get_stock_data_akshare(symbol, start_date, end_date)
-    elif data_source == 'baostock':
-        return get_stock_data_baostock(symbol, start_date, end_date)
-    else:  # yfinance
-        return get_stock_data_yfinance(symbol, start_date, end_date) 
+def get_data_with_cache(
+    market, symbol, start_date, end_date,
+    fx_data_source='yfinance', alpha_vantage_key=None, cache_dir='cache', crypto_data_source='ccxt'
+):
+    """
+    获取数据，优先本地缓存，若无则拉取并缓存。每次拉取新数据会覆盖原缓存。
+    market: '沪深A股'/'加密货币'/'外汇'
+    symbol: 标的代码
+    start_date, end_date: 'YYYY-MM-DD'
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"{market}_{symbol}_{start_date}_{end_date}.csv")
+    # 先查缓存
+    if os.path.exists(cache_file):
+        try:
+            df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            if not df.empty:
+                return df
+        except Exception as e:
+            print(f"读取缓存失败: {e}")
+    # 拉取数据，自动切换数据源
+    for i in range(3):
+        try:
+            if market == '沪深A股':
+                df = fetch_stock_data(symbol, start_date, end_date)
+            elif market == '加密货币':
+                # 优先用用户指定的数据源，失败自动切换到 akshare/ccxt
+                try_sources = [crypto_data_source]
+                if crypto_data_source == 'ccxt':
+                    try_sources.append('akshare')
+                elif crypto_data_source == 'akshare':
+                    try_sources.append('ccxt')
+                for source in try_sources:
+                    try:
+                        df = fetch_crypto_data(symbol, start_date, end_date, data_source=source)
+                        if df is not None and not df.empty:
+                            break
+                    except Exception as e:
+                        print(f'加密货币数据源 {source} 拉取失败: {e}')
+                else:
+                    df = None
+            elif market == '外汇':
+                # 优先用用户指定的数据源，失败自动切换到 akshare/yfinance/alphavantage
+                try_sources = [fx_data_source]
+                for alt in ['akshare', 'yfinance', 'alphavantage']:
+                    if alt not in try_sources:
+                        try_sources.append(alt)
+                for source in try_sources:
+                    try:
+                        df = fetch_forex_data(symbol, start_date, end_date, data_source=source, alpha_vantage_key=alpha_vantage_key)
+                        if df is not None and not df.empty:
+                            break
+                    except Exception as e:
+                        print(f'外汇数据源 {source} 拉取失败: {e}')
+                else:
+                    df = None
+            else:
+                df = None
+            if df is not None and not df.empty:
+                # 每次都覆盖缓存
+                df.to_csv(cache_file)
+                return df
+        except Exception as e:
+            print(f'拉取失败，第{i+1}次重试: {e}')
+            time.sleep(2)
+    return None
