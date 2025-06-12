@@ -17,6 +17,10 @@ def run_backtest(data, strategy_class, strategy_params):
     cerebro.adddata(data_feed)
     cerebro.broker.setcash(strategy_params.get('initial_cash', 10000))
     cerebro.broker.setcommission(commission=0.001)
+    # 取出杠杆参数，不传递给策略
+    leverage = strategy_params.pop('leverage', 1)
+    if leverage > 1:
+        cerebro.broker.setcommission(leverage=leverage, commission=0.001)
     cerebro.addstrategy(strategy_class, **{k: v for k, v in strategy_params.items() if k != 'initial_cash'})
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
@@ -43,6 +47,7 @@ def run_backtest(data, strategy_class, strategy_params):
         'total_won': total_won,
         'equity_curve': equity_curve,
         'trades': getattr(strategy, 'trades', []),
+        'initial_cash': strategy_params.get('initial_cash', 10000),
     }
 
 def main():
@@ -95,6 +100,10 @@ def main():
             'macd_fast': macd_fast, 'macd_slow': macd_slow, 'macd_signal': macd_signal, 'position_size': position_size
         }
     strategy_params['initial_cash'] = st.sidebar.number_input("初始资金", 1000, 1000000, 10000, step=1000)
+    if market == "外汇":
+        leverage = st.sidebar.number_input("杠杆倍数", 10, 100, 10)
+    else:
+        leverage = 1
     if st.sidebar.button("执行回测"):
         with st.spinner("正在获取数据..."):
             data = get_data_with_cache(
@@ -104,11 +113,12 @@ def main():
             if data is None or len(data) == 0:
                 st.error("数据获取失败，请检查网络/VPN或重试！")
                 return
-            # 新增：如果数据只有一行，提示 akshare 仅查最新价，无法回测
             if len(data) < 2:
                 st.error("当前数据源仅返回最新价，无法进行回测。请更换数据源或检查数据区间！")
                 return
             st.success("数据获取成功，正在回测…")
+            # 传递杠杆参数
+            strategy_params['leverage'] = leverage
             results = run_backtest(data, strategy_class, strategy_params)
             display_backtest_results(results)
 
