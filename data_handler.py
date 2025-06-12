@@ -54,11 +54,17 @@ def fetch_crypto_data(symbol, start_date, end_date, data_source='ccxt'):
         if df.empty:
             print(f"akshare 未找到币种 {symbol_str} 的最新价")
             return None
-        # 补齐字段
-        df.rename(columns={'开盘': 'Open', '最高': 'High', '最低': 'Low', '收盘': 'Close', '24小时成交量': 'Volume', '更新时间': 'Date'}, inplace=True)
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        # 补齐字段，确保所有字段存在
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if col not in df.columns:
+                df[col] = 0
+        # 只保留需要的字段
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        # 如果只有一行，直接返回 None，防止回测端异常
+        if len(df) < 2:
+            print(f"akshare 仅返回一行最新价，无法用于回测")
+            return None
+        return df
     else:
         raise ValueError("暂不支持的数据源")
 
