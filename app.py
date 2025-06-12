@@ -104,6 +104,10 @@ def main():
             if data is None or len(data) == 0:
                 st.error("数据获取失败，请检查网络/VPN或重试！")
                 return
+            # 新增：如果数据只有一行，提示 akshare 仅查最新价，无法回测
+            if len(data) < 2:
+                st.error("当前数据源仅返回最新价，无法进行回测。请更换数据源或检查数据区间！")
+                return
             st.success("数据获取成功，正在回测…")
             results = run_backtest(data, strategy_class, strategy_params)
             display_backtest_results(results)
