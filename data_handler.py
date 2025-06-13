@@ -189,16 +189,14 @@ def get_data_with_cache(
     # 先查缓存
     if os.path.exists(cache_file):
         try:
-            df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            df = pd.read_csv(cache_file, index_col=0)
+            # 强制 index 为 DatetimeIndex，消除 parse_dates 警告
+            df.index = pd.to_datetime(df.index, errors='coerce')
             # 修复：强制数值列为 float，去除非法/缺失行
             for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
-            # 修复：强制 index 为 DatetimeIndex
-            if not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index, errors='coerce')
-            df = df[~df.index.isna()]
             if not df.empty:
                 return df
         except Exception as e:
